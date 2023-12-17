@@ -1,13 +1,24 @@
-from flask import Flask,jsonify,request
-
-import secrets
-
-from secrets import randbelow
+from flask import Flask, jsonify, request
+from flask_sqlalchemy import SQLAlchemy
 from datetime import datetime
 
-app = Flask(__name__)
+import secrets
+import random
+from secrets import randbelow
+import click
 
-posts=[]
+app = Flask(__name__)
+app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///post.db'  # Use SQLite database
+app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+db = SQLAlchemy(app)
+
+
+
+class Post(db.Model):
+    id = db.Column(db.Integer, primary_key=True,autoincrement=True)
+    key = db.Column(db.String(64), unique=True, nullable=False)
+    timestamp = db.Column(db.String(30), nullable=False)
+    msg = db.Column(db.String(255), nullable=False)
 
 @app.get("/random/<int:sides>")
 def roll(sides):
@@ -20,86 +31,79 @@ def generate_key():
     # Generating a secure random key using secrets module
     return secrets.token_urlsafe(32)
 
-@app.post("/post")
-def post():
+
+
+# Endpoint to create a new post
+@app.route('/post', methods=['POST'])
+def create_post():
     try:
         data = request.get_json()
 
-        # Check if the request body is a JSON object and contains the 'msg' field
         if not isinstance(data, dict) or 'msg' not in data or not isinstance(data['msg'], str):
             return jsonify({"error": "Bad Request. 'msg' field missing or not a string."}), 400
 
-        # Generate unique id
-        post_id = len(posts) + 1
+        post = Post(
+            key=generate_key(),
+            timestamp=datetime.now().replace(microsecond=0).isoformat(),
+            msg=data['msg']
+        )
 
-        # Generate a unique random key
-        key = generate_key()
+        db.session.add(post)
+        db.session.commit()
 
-        # Get the current timestamp in ISO 8601 format
-        timestamp = datetime.utcnow().isoformat()
-
-        # Create the post
-        post = {
-            "id": post_id,
-            "key": key,
-            "timestamp": timestamp,
-            "msg": data['msg']
-        }
-
-        # Add the post to the list
-        posts.append(post)
-
-        # Return the response
         response = {
-            "id": post_id,
-            "key": key,
-            "timestamp": timestamp
+            "id": post.id,
+            "key": post.key,
+            "timestamp": post.timestamp
         }
 
-        return jsonify(response), 201
+        return jsonify(response)
 
     except Exception as e:
-        return jsonify({"error": "Internal Server Error","error":e}), 500
-    
+            return jsonify({e: "Internal Server Error"}), 500
 
-@app.get('/post/<int:post_id>')
+# Endpoint to get a post by ID
+@app.route('/post/<int:post_id>', methods=['GET'])
 def get_post(post_id):
-    post = next((p for p in posts if p['id'] == post_id), None)
+    post = Post.query.get(post_id)
+
     if post:
-        # Return the response without the key
         response = {
-            "id": post['id'],
-            "timestamp": post['timestamp'],
-            "msg": post['msg']
+            "id": post.id,
+            "timestamp": post.timestamp,
+            "msg": post.msg
         }
         return jsonify(response)
     else:
         return jsonify({"error": "Post not found"}), 404
-    
+
+# Endpoint to delete a post by ID and key
 @app.route('/post/<int:post_id>/delete/<string:key>', methods=['DELETE'])
 def delete_post(post_id, key):
-    global posts
-
-    # Find the post by ID
-    post = next((p for p in posts if p['id'] == post_id), None)
+    post = Post.query.get(post_id)
 
     if post:
-        # Check if the provided key matches the key associated with the post
-        if key == post['key']:
-            # Delete the post
-            posts = [p for p in posts if p['id'] != post_id]
-            
-            # Return the same information as in the POST response
+        if key == post.key:
+            db.session.delete(post)
+            db.session.commit()
+
             response = {
-                "id": post['id'],
-                "key": generate_key(),  # Generate a new key after deletion
-                "timestamp": post['timestamp']
+                "id": post.id,
+                "key": generate_key(),
+                "timestamp": post.timestamp
             }
 
             return jsonify(response), 200
         else:
-            # Key mismatch, return forbidden error
             return jsonify({"error": "Forbidden. Invalid key"}), 403
     else:
-        # Post not found, return not found error
         return jsonify({"error": "Post not found"}), 404
+
+
+@app.before_request
+def create_tables():
+    db.create_all()
+
+
+if __name__ == '__main__':
+    app.run(debug=True)
